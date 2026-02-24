@@ -31,71 +31,94 @@ def extract_video_id(url: str):
     match = re.search(r"(?:v=|\/)([0-9A-Za-z_-]{11}).*", url)
     return match.group(1) if match else None
 
-# 🚨 [최종 아키텍처] 다중 플랫폼(Multi-Platform) 로테이션 위장 엔진
-# youtube-transcript.io 와 동일한 원리로, CC가 없는 영상의 '자동 생성 자막'을 
-# 뽑아내기 위해 웹, 안드로이드, iOS, 스마트TV 등 4가지 신분으로 바꿔가며 유튜브를 공략합니다.
-def fetch_transcript_innertube_multi(video_id: str):
-    api_url = "https://www.youtube.com/youtubei/v1/player"
+# 🚨 [최종 완결판] Google API 다이렉트 모바일 앱 우회 엔진
+# www.youtube.com 의 웹 방화벽을 피하기 위해, youtubei.googleapis.com 공식 API 서버로 
+# 안드로이드 및 아이폰 앱 통신 패킷을 쏘아 방화벽을 우회합니다.
+def fetch_transcript_innertube_api(video_id: str):
+    # 웹 주소가 아닌 구글 모바일 통합 API 주소 사용 (웹 방화벽 미적용 지대)
+    api_url = "https://youtubei.googleapis.com/youtubei/v1/player"
 
-    # 1. 유튜브 서버가 각 기기마다 내려주는 자막 데이터가 다르기 때문에 4가지 신분증 준비
     clients = [
-        # 1순위: 가장 기본적이고 자동 자막을 잘 주는 WEB
-        {"clientName": "WEB", "clientVersion": "2.20240105.01.00"},
-        # 2순위: 스마트TV (연령 제한이나 까다로운 방화벽을 잘 무시함)
-        {"clientName": "TVHTML5", "clientVersion": "7.20230405.08.01"},
-        # 3순위: 안드로이드 공식 앱
-        {"clientName": "ANDROID", "clientVersion": "17.31.35"},
-        # 4순위: 아이폰 공식 앱
-        {"clientName": "IOS", "clientVersion": "19.28.1", "deviceMake": "Apple", "deviceModel": "iPhone14,5", "osName": "iOS", "osVersion": "17.5.1"}
+        {
+            "name": "ANDROID",
+            "headers": {
+                "Content-Type": "application/json",
+                "User-Agent": "com.google.android.youtube/17.31.35 (Linux; U; Android 11; en_US; Pixel 5 Build/RQ3A.210805.001.A1)",
+                "X-YouTube-Client-Name": "3",
+                "X-YouTube-Client-Version": "17.31.35",
+            },
+            "client_context": {
+                "clientName": "ANDROID",
+                "clientVersion": "17.31.35",
+                "androidSdkVersion": 30,
+                "hl": "en",
+                "gl": "US"
+            }
+        },
+        {
+            "name": "IOS",
+            "headers": {
+                "Content-Type": "application/json",
+                "User-Agent": "com.google.ios.youtube/19.28.1 (iPhone14,5; U; CPU iOS 17_5_1 like Mac OS X; en_US)",
+                "X-YouTube-Client-Name": "5",
+                "X-YouTube-Client-Version": "19.28.1",
+            },
+            "client_context": {
+                "clientName": "IOS",
+                "clientVersion": "19.28.1",
+                "deviceMake": "Apple",
+                "deviceModel": "iPhone14,5",
+                "osName": "iOS",
+                "osVersion": "17.5.1",
+                "hl": "en",
+                "gl": "US"
+            }
+        }
     ]
-
-    headers = {
-        "Content-Type": "application/json",
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "Accept-Language": "en-US,en;q=0.9,ko;q=0.8"
-    }
 
     caption_tracks = []
     video_title = "알 수 없는 영상"
+    success_headers = None
 
-    # 2. 4가지 신분으로 차례대로 유튜브 내부망(InnerTube) 공격
     for client in clients:
-        print(f"🔄 [{client['clientName']}] 플랫폼으로 위장 접속 시도 중...")
+        print(f"🔄 [{client['name']}] 모바일 다이렉트 API 우회 접속 시도 중...")
         payload = {
             "context": {
-                "client": {
-                    **client,
-                    "hl": "en",
-                    "gl": "US"
-                }
+                "client": client["client_context"]
             },
             "videoId": video_id
         }
 
         try:
-            res = requests.post(api_url, json=payload, headers=headers, timeout=10)
+            res = requests.post(api_url, json=payload, headers=client["headers"], timeout=10)
             if res.status_code == 200:
                 data = res.json()
                 
-                # 영상 제목은 최초 성공 시 무조건 스니핑
+                # 영상 제목(Title) 추출 - 구글 API는 캡차 없이 무조건 데이터를 줍니다.
                 if video_title == "알 수 없는 영상":
                     video_title = data.get("videoDetails", {}).get("title", "알 수 없는 영상")
+
+                playability = data.get("playabilityStatus", {}).get("status", "")
+                if playability in ["UNPLAYABLE", "LOGIN_REQUIRED", "ERROR"]:
+                    reason = data.get("playabilityStatus", {}).get("reason", "접근 불가")
+                    print(f"⚠️ [{client['name']}] 영상 재생 불가 상태: {reason}")
+                    continue
                     
-                # 자막 트랙 확인
                 tracks = data.get("captions", {}).get("playerCaptionsTracklistRenderer", {}).get("captionTracks", [])
                 if tracks:
                     caption_tracks = tracks
-                    print(f"✅ [{client['clientName']}] 플랫폼 위장 성공! 자동/수동 자막 데이터 확보 완료.")
+                    success_headers = client["headers"]
+                    print(f"✅ [{client['name']}] 모바일 API 우회 성공! 영상 제목 및 자막 확보 완료.")
                     break
         except Exception as e:
-            print(f"⚠️ [{client['clientName']}] 접속 에러: {e}")
+            print(f"⚠️ [{client['name']}] 접속 에러: {e}")
             continue
 
-    # 4가지 기기로 다 찔러봤는데도 없으면 정말 물리적으로 자막이 없는 영상임
+    # 모바일 API를 다 찔러봤는데도 자막이 없다면 100% 자막이 없는 영상임을 증명!
     if not caption_tracks:
-        raise Exception(f"[{video_title}] 영상에는 자동 생성 자막(ASR)조차 존재하지 않습니다. 자막이 1초라도 포함된 영상인지 확인해주세요.")
+        raise Exception(f"[{video_title}] 영상에는 자동 생성 자막(ASR)조차 물리적으로 존재하지 않습니다. 자막이 활성화된 영상인지 확인해주세요.")
 
-    # 3. 최우선 순위: 영어(en) -> 한국어(ko) -> 첫 번째 자막
+    # 최우선 순위: 영어(en) -> 한국어(ko) -> 첫 번째 자막
     target_track = next((track for track in caption_tracks if track.get('languageCode') == 'en'), None)
     if not target_track:
         target_track = next((track for track in caption_tracks if track.get('languageCode') == 'ko'), None)
@@ -104,13 +127,12 @@ def fetch_transcript_innertube_multi(video_id: str):
 
     xml_url = target_track['baseUrl']
 
-    # 4. 자막 원본 파일 다운로드 및 파싱
-    print("📥 자막 파일 다운로드 및 파싱 진행 중...")
+    print("📥 자막 원본 파일 다운로드 및 파싱 진행 중...")
     try:
-        xml_res = requests.get(xml_url, headers=headers, timeout=10)
+        xml_res = requests.get(xml_url, headers=success_headers, timeout=10)
         parsed_data = []
-        root = ET.fromstring(xml_res.text)
         
+        root = ET.fromstring(xml_res.text)
         for child in root:
             if child.tag == 'text':
                 start = float(child.attrib.get('start', 0))
@@ -129,7 +151,7 @@ def fetch_transcript_innertube_multi(video_id: str):
 
 @app.get("/")
 def health_check():
-    return {"status": "ok", "message": "Multi-Platform 로테이션 아키텍처 실행 중!"}
+    return {"status": "ok", "message": "Google API 다이렉트 우회 아키텍처 실행 중!"}
 
 @app.get("/api/analyze")
 def analyze_youtube_video(video_url: str):
@@ -137,9 +159,9 @@ def analyze_youtube_video(video_url: str):
     if not video_id:
         raise HTTPException(status_code=400, detail="유효하지 않은 유튜브 URL입니다.")
 
-    # 1. 다중 플랫폼 로테이션을 통한 자막 추출
+    # 1. 모바일 다이렉트 API 로테이션을 통한 자막 추출
     try:
-        data = fetch_transcript_innertube_multi(video_id)
+        data = fetch_transcript_innertube_api(video_id)
         full_text = " ".join([t['text'] for t in data])
         print(f"✅ 최종 자막 확보 성공! 전체 길이: {len(full_text)}")
     except Exception as e:
