@@ -2,4 +2,3 @@ fastapi
 uvicorn
 youtube-transcript-api>=0.6.2
 google-generativeai
-2.  **[Render Dashboard](https://dashboard.render.com/)** 에 접속하여 `tube-backend` (또는 본인의 서버 이름) 프로젝트를 클릭합니다.
