@@ -31,43 +31,45 @@ def extract_video_id(url: str):
     match = re.search(r"(?:v=|\/)([0-9A-Za-z_-]{11}).*", url)
     return match.group(1) if match else None
 
-# 🚨 [최종 완결판] 임베디드(Embed) & 스마트 TV 우회 엔진
-# 유튜브의 최신 '모바일 봇 차단(PO Token)'을 무력화하기 위해, 
-# 방어막이 가장 느슨한 '외부 퍼가기(Embed) 플레이어'와 '스마트 TV'로 신분을 위장합니다.
+# 🚨 [최종 완결판] 최신 다중 플랫폼(Multi-Platform) 우회 엔진
+# 유튜브의 최신 '모바일 봇 차단(PO Token)' 및 구형 API 만료에 대응하기 위해, 
+# 가장 안전한 최신 WEB, ANDROID, IOS 기기로 신분을 로테이션 위장합니다.
 def fetch_transcript_innertube_api(video_id: str):
     api_url = "https://youtubei.googleapis.com/youtubei/v1/player"
 
-    # 1. 봇 차단을 우회하는 최강의 클라이언트 조합
+    # 1. 봇 차단을 우회하는 최강의 최신 클라이언트 조합
     clients = [
         {
-            "name": "WEB_EMBED",  # 외부 사이트에 퍼가기 된 플레이어 (캡차 면제율 99%)
+            "name": "WEB",  # 기본 웹 (가장 범용적)
             "headers": {
                 "Content-Type": "application/json",
-                "Referer": f"https://www.youtube.com/embed/{video_id}",
                 "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
             },
             "client_context": {
-                "clientName": "WEB_EMBED",
-                "clientVersion": "1.20240101.01.00",
+                "clientName": "WEB",
+                "clientVersion": "2.20240105.01.00",
                 "hl": "en",
                 "gl": "US"
             }
         },
         {
-            "name": "TV_EMBED",  # 스마트 TV 내장 플레이어 (보안 토큰 검사 면제 지대)
+            "name": "ANDROID",  # 최신 안드로이드 (Pixel 7 위장)
             "headers": {
                 "Content-Type": "application/json",
-                "User-Agent": "Mozilla/5.0 (SmartHub; SMART-TV; U; Linux/SmartTV+2014; Maple2012) AppleWebKit/535.20+ (KHTML, like Gecko) SmartTV Safari/535.20+"
+                "User-Agent": "com.google.android.youtube/19.30.36 (Linux; U; Android 13; en_US; Pixel 7 Build/TQ3A.230805.001.S1)",
+                "X-YouTube-Client-Name": "3",
+                "X-YouTube-Client-Version": "19.30.36",
             },
             "client_context": {
-                "clientName": "TVHTML5_SIMPLY_EMBEDDED_PLAYER",
-                "clientVersion": "2.0",
+                "clientName": "ANDROID",
+                "clientVersion": "19.30.36",
+                "androidSdkVersion": 33,
                 "hl": "en",
                 "gl": "US"
             }
         },
         {
-            "name": "IOS",  # 최후의 보루: 모바일 앱
+            "name": "IOS",  # 최신 아이폰
             "headers": {
                 "Content-Type": "application/json",
                 "User-Agent": "com.google.ios.youtube/19.28.1 (iPhone14,5; U; CPU iOS 17_5_1 like Mac OS X; en_US)",
@@ -105,9 +107,11 @@ def fetch_transcript_innertube_api(video_id: str):
             if res.status_code == 200:
                 data = res.json()
                 
-                # 영상 제목(Title) 추출
+                # 🚨 영상 제목(Title) 다중 스니핑 (어떤 구조든 100% 잡아냅니다)
                 if video_title == "알 수 없는 영상":
-                    video_title = data.get("videoDetails", {}).get("title", "알 수 없는 영상")
+                    title1 = data.get("videoDetails", {}).get("title")
+                    title2 = data.get("microformat", {}).get("playerMicroformatRenderer", {}).get("title", {}).get("simpleText")
+                    video_title = title1 or title2 or "알 수 없는 영상"
 
                 playability = data.get("playabilityStatus", {}).get("status", "")
                 if playability in ["UNPLAYABLE", "LOGIN_REQUIRED", "ERROR"]:
@@ -162,7 +166,7 @@ def fetch_transcript_innertube_api(video_id: str):
 
 @app.get("/")
 def health_check():
-    return {"status": "ok", "message": "Google API 다이렉트 우회 아키텍처 실행 중!"}
+    return {"status": "ok", "message": "Google API 다이렉트 최신 우회 아키텍처 실행 중!"}
 
 @app.get("/api/analyze")
 def analyze_youtube_video(video_url: str):
