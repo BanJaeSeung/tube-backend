@@ -51,35 +51,33 @@ def analyze_youtube_video(video_url: str):
     try:
         print(f"Attempting to fetch transcript for video: {video_id}")
         
-        # 최신 기능인 list_transcripts만 강제 사용
-        # 만약 여기서 AttributeError가 난다면 100% 라이브러리 구버전 캐시 문제임
-        transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
-        
-        try:
-            transcript = transcript_list.find_manually_created_transcript(['en'])
-            print("Found manual English transcript.")
-        except:
+        # 신버전과 구버전 모두 호환되도록 강력한 폴백(Fallback) 로직 적용
+        if hasattr(YouTubeTranscriptApi, 'list_transcripts'):
+            # 최신 버전 라이브러리가 설치된 경우
+            transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
             try:
-                transcript = transcript_list.find_generated_transcript(['en'])
-                print("Found auto-generated English transcript.")
+                transcript = transcript_list.find_manually_created_transcript(['en'])
+                print("Found manual English transcript.")
             except:
-                transcript = transcript_list.find_transcript(['en'])
-                print("Found any available English transcript.")
+                try:
+                    transcript = transcript_list.find_generated_transcript(['en'])
+                    print("Found auto-generated English transcript.")
+                except:
+                    transcript = transcript_list.find_transcript(['en'])
+                    print("Found any available English transcript.")
+            data = transcript.fetch()
+        else:
+            # Render 캐시 문제로 구버전 라이브러리가 설치된 경우 (에러 내지 않고 우회)
+            print("WARNING: Render 서버의 캐시로 인해 구버전 라이브러리를 사용하여 자막을 추출합니다.")
+            data = YouTubeTranscriptApi.get_transcript(video_id, languages=['en'])
 
-        data = transcript.fetch()
         full_text = " ".join([t['text'] for t in data])
         print(f"Successfully fetched transcript. Length: {len(full_text)} chars.")
-        
-    except AttributeError as e:
-        # 라이브러리 구버전 문제 발생 시 화면에 띄울 명확한 메시지
-        error_msg = "Render 서버에 구버전 라이브러리가 남아있습니다. requirements.txt에 'youtube-transcript-api>=0.6.2'를 확인하고, Render에서 반드시 [Clear build cache & deploy]를 실행하세요."
-        print(f"CRITICAL VERSION ERROR: {error_msg}")
-        raise HTTPException(status_code=500, detail=f"[시스템 오류] {error_msg}")
         
     except Exception as e:
         error_trace = traceback.format_exc()
         print(f"Transcript Fetch Error:\n{error_trace}")
-        raise HTTPException(status_code=400, detail=f"[자막 추출 실패] 자막을 가져올 수 없습니다. 비공개 영상이거나 자막이 없는 영상일 수 있습니다. 상세 오류: {str(e)}")
+        raise HTTPException(status_code=400, detail=f"[자막 추출 실패] 자막을 가져올 수 없거나 영어 자막이 없는 영상입니다. 상세 오류: {str(e)}")
 
     # 2. AI Processing with Gemini (AI 분석 단계)
     try:
