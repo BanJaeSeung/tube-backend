@@ -47,27 +47,33 @@ def analyze_youtube_video(video_url: str):
         print("Error: Invalid YouTube URL")
         raise HTTPException(status_code=400, detail="올바르지 않은 유튜브 URL입니다.")
 
-    # 1. Fetch Transcript (자막 추출 단계)
+    # 1. Fetch Transcript (자막 추출 단계 - 모든 언어 지원으로 강화)
     try:
         print(f"Attempting to fetch transcript for video: {video_id}")
         
-        # 신버전과 구버전 모두 호환되도록 강력한 폴백(Fallback) 로직 적용
         if hasattr(YouTubeTranscriptApi, 'list_transcripts'):
-            # 최신 버전 라이브러리가 설치된 경우
             transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
             try:
+                # 1순위: 사람이 직접 만든 영어 자막
                 transcript = transcript_list.find_manually_created_transcript(['en'])
                 print("Found manual English transcript.")
             except:
                 try:
+                    # 2순위: 자동 생성된 영어 자막
                     transcript = transcript_list.find_generated_transcript(['en'])
                     print("Found auto-generated English transcript.")
                 except:
-                    transcript = transcript_list.find_transcript(['en'])
-                    print("Found any available English transcript.")
+                    # 3순위: 영어 자막이 아예 없는 경우, 아무 언어나 가져와서 영어로 자동 번역!
+                    available_transcripts = list(transcript_list)
+                    if not available_transcripts:
+                        raise Exception("영상에 어떠한 자막도 존재하지 않습니다.")
+                    
+                    # 첫 번째로 발견된 자막(예: 한국어)을 영어로 번역
+                    transcript = available_transcripts[0].translate('en')
+                    print(f"Translated {available_transcripts[0].language} transcript to English.")
+            
             data = transcript.fetch()
         else:
-            # Render 캐시 문제로 구버전 라이브러리가 설치된 경우 (에러 내지 않고 우회)
             print("WARNING: Render 서버의 캐시로 인해 구버전 라이브러리를 사용하여 자막을 추출합니다.")
             data = YouTubeTranscriptApi.get_transcript(video_id, languages=['en'])
 
@@ -77,7 +83,7 @@ def analyze_youtube_video(video_url: str):
     except Exception as e:
         error_trace = traceback.format_exc()
         print(f"Transcript Fetch Error:\n{error_trace}")
-        raise HTTPException(status_code=400, detail=f"[자막 추출 실패] 자막을 가져올 수 없거나 영어 자막이 없는 영상입니다. 상세 오류: {str(e)}")
+        raise HTTPException(status_code=400, detail=f"[자막 추출 실패] 자막을 가져올 수 없습니다. 상세 오류: {str(e)}")
 
     # 2. AI Processing with Gemini (AI 분석 단계)
     try:
@@ -106,7 +112,7 @@ def analyze_youtube_video(video_url: str):
     except Exception as e:
         error_trace = traceback.format_exc()
         print(f"Gemini API Error:\n{error_trace}")
-        raise HTTPException(status_code=500, detail=f"[AI 분석 실패] Gemini API 통신 중 오류가 발생했습니다. API 키나 할당량을 확인해주세요. 상세 오류: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"[AI 분석 실패] Gemini API 통신 중 오류가 발생했습니다. API 키나 제공량을 확인해주세요. 상세 오류: {str(e)}")
 
     # 3. Parse JSON & Align Timestamps (결과 처리 단계)
     try:
@@ -130,7 +136,7 @@ def analyze_youtube_video(video_url: str):
         
     except json.JSONDecodeError as e:
         print(f"JSON Parsing Error: AI returned invalid JSON format. Response text: {response_text}")
-        raise HTTPException(status_code=500, detail="[결과 처리 실패] AI가 올바른 형식(JSON)으로 응답하지 않았습니다. 다시 시도해주세요.")
+        raise HTTPException(status_code=500, detail="[결과 처리 실패] AI가 올바른 형식(JSON)으로 응답하지 않았습니다.")
     except Exception as e:
         error_trace = traceback.format_exc()
         print(f"Data Processing Error:\n{error_trace}")
