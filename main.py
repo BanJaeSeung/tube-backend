@@ -47,43 +47,42 @@ def analyze_youtube_video(video_url: str):
         print("Error: Invalid YouTube URL")
         raise HTTPException(status_code=400, detail="올바르지 않은 유튜브 URL입니다.")
 
-    # 1. Fetch Transcript (자막 추출 단계 - 모든 언어 지원으로 강화)
+    # 1. Fetch Transcript (자막 추출 단계)
     try:
         print(f"Attempting to fetch transcript for video: {video_id}")
         
-        if hasattr(YouTubeTranscriptApi, 'list_transcripts'):
-            transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
-            try:
-                # 1순위: 사람이 직접 만든 영어 자막
-                transcript = transcript_list.find_manually_created_transcript(['en'])
-                print("Found manual English transcript.")
-            except:
-                try:
-                    # 2순위: 자동 생성된 영어 자막
-                    transcript = transcript_list.find_generated_transcript(['en'])
-                    print("Found auto-generated English transcript.")
-                except:
-                    # 3순위: 영어 자막이 아예 없는 경우, 아무 언어나 가져와서 영어로 자동 번역!
-                    available_transcripts = list(transcript_list)
-                    if not available_transcripts:
-                        raise Exception("영상에 어떠한 자막도 존재하지 않습니다.")
-                    
-                    # 첫 번째로 발견된 자막(예: 한국어)을 영어로 번역
-                    transcript = available_transcripts[0].translate('en')
-                    print(f"Translated {available_transcripts[0].language} transcript to English.")
-            
-            data = transcript.fetch()
-        else:
-            print("WARNING: Render 서버의 캐시로 인해 구버전 라이브러리를 사용하여 자막을 추출합니다.")
-            data = YouTubeTranscriptApi.get_transcript(video_id, languages=['en'])
+        # 🚨 [핵심] 구버전 라이브러리 강력 차단!
+        if not hasattr(YouTubeTranscriptApi, 'list_transcripts'):
+            raise Exception("라이브러리 버전 오류! Render 대시보드에서 반드시 [Manual Deploy] -> [Clear build cache & deploy]를 클릭하여 캐시를 초기화해야 합니다.")
 
+        transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
+        
+        try:
+            # 1순위: 사람이 직접 만든 영어 자막
+            transcript = transcript_list.find_manually_created_transcript(['en'])
+            print("Found manual English transcript.")
+        except:
+            try:
+                # 2순위: 자동 생성된 영어 자막
+                transcript = transcript_list.find_generated_transcript(['en'])
+                print("Found auto-generated English transcript.")
+            except:
+                # 3순위: 영어 자막이 아예 없는 경우, 다른 언어를 영어로 자동 번역
+                available_transcripts = list(transcript_list)
+                if not available_transcripts:
+                    raise Exception("영상에 어떠한 자막도 존재하지 않습니다.")
+                
+                transcript = available_transcripts[0].translate('en')
+                print(f"Translated {available_transcripts[0].language} transcript to English.")
+        
+        data = transcript.fetch()
         full_text = " ".join([t['text'] for t in data])
         print(f"Successfully fetched transcript. Length: {len(full_text)} chars.")
         
     except Exception as e:
         error_trace = traceback.format_exc()
         print(f"Transcript Fetch Error:\n{error_trace}")
-        raise HTTPException(status_code=400, detail=f"[자막 추출 실패] 자막을 가져올 수 없습니다. 상세 오류: {str(e)}")
+        raise HTTPException(status_code=400, detail=f"[자막 추출 실패] {str(e)}")
 
     # 2. AI Processing with Gemini (AI 분석 단계)
     try:
