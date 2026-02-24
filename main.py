@@ -7,7 +7,6 @@ import os
 import re
 import json
 import traceback
-import urllib.parse
 
 app = FastAPI()
 
@@ -32,69 +31,54 @@ def extract_video_id(url: str):
     match = re.search(r"(?:v=|\/)([0-9A-Za-z_-]{11}).*", url)
     return match.group(1) if match else None
 
-# 🚨 [진짜 최종 완결판] 대용량 웹 프록시(CORS Proxy) 기반 스텔스 엔진
-def fetch_transcript_stealth(video_id: str):
-    target_url = f"https://www.youtube.com/watch?v={video_id}"
-    encoded_url = urllib.parse.quote(target_url)
+# 🚨 [최종 아키텍처] 아이폰(iOS) 유튜브 앱 완벽 위장(Spoofing) 엔진
+# Render 서버의 IP 차단(웹 방화벽)을 무력화하기 위해 모바일 앱 내부망을 공략합니다.
+def fetch_transcript_ios_spoof(video_id: str):
+    # 1. 유튜브 모바일 앱이 내부적으로 사용하는 공식 API 엔드포인트
+    api_url = "https://www.youtube.com/youtubei/v1/player"
 
-    # 1. Render IP 차단을 무력화하기 위해 초대형 무료 퍼블릭 프록시들을 거쳐 유튜브를 찌릅니다.
-    proxy_urls = [
-        target_url, # 혹시 차단이 풀렸을 경우를 대비한 다이렉트 요청
-        f"https://api.allorigins.win/raw?url={encoded_url}",
-        f"https://api.codetabs.com/v1/proxy?quest={encoded_url}",
-        f"https://corsproxy.io/?{encoded_url}"
-    ]
-
+    # 2. 완벽한 아이폰(iPhone 14) 위장 헤더
     headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Accept-Language': 'en-US,en;q=0.9,ko;q=0.8',
-        'Cookie': 'CONSENT=YES+cb.20210328-17-p0.en+FX+478'
+        "Content-Type": "application/json",
+        "User-Agent": "com.google.ios.youtube/19.28.1 (iPhone14,5; U; CPU iOS 17_5_1 like Mac OS X; en_US)"
     }
 
-    html = None
-    for p_url in proxy_urls:
-        try:
-            print(f"🌐 프록시 스텔스 접속 시도 중: {p_url[:50]}...")
-            res = requests.get(p_url, headers=headers, timeout=10)
-            if res.status_code == 200 and 'ytInitialPlayerResponse' in res.text:
-                html = res.text
-                print("✅ 유튜브 원본 HTML 데이터 프록시 획득 성공!")
-                break
-        except Exception as e:
-            print(f"⚠️ 프록시 접속 실패: {e}")
-            continue
+    # 3. iOS 앱에서 서버로 보내는 데이터 규격 (웹 방화벽을 우회하는 핵심 열쇠)
+    payload = {
+        "context": {
+            "client": {
+                "clientName": "IOS",
+                "clientVersion": "19.28.1",
+                "deviceMake": "Apple",
+                "deviceModel": "iPhone14,5",
+                "osName": "iOS",
+                "osVersion": "17.5.1",
+                "hl": "en",
+                "gl": "US"
+            }
+        },
+        "videoId": video_id
+    }
 
-    if not html:
-        raise Exception("유튜브 방화벽이 너무 강력하여 모든 글로벌 프록시망이 차단되었습니다.")
+    print("📱 아이폰(iOS) 위장(Spoofing) 접속 시도 중...")
+    try:
+        res = requests.post(api_url, json=payload, headers=headers, timeout=10)
+        if res.status_code != 200:
+            raise Exception(f"iOS API 서버 연결 거부 (HTTP {res.status_code})")
+            
+        data = res.json()
+    except Exception as e:
+        raise Exception(f"모바일 위장 접속 실패: {e}")
 
-    # 2. 🚨 영상 제목(Title) 100% 확실하게 추출 (HTML <title> 태그 스니핑)
-    video_title = "알 수 없는 영상" 
-    title_match = re.search(r'<title>(.*?)</title>', html, re.IGNORECASE)
-    if title_match:
-        # " - YouTube" 꼬리표 제거
-        video_title = title_match.group(1).replace(" - YouTube", "").replace("- YouTube", "").strip()
-
-    # 3. HTML 내부에 숨겨진 자막 데이터 추출
-    caption_tracks = []
-    match = re.search(r'ytInitialPlayerResponse\s*=\s*({.+?})\s*;\s*(?:var\s+meta|<\/script|\n)', html)
-    if match:
-        try:
-            player_response = json.loads(match.group(1))
-            caption_tracks = player_response.get('captions', {}).get('playerCaptionsTracklistRenderer', {}).get('captionTracks', [])
-        except: pass
+    # 4. 모바일 API 응답에서 자막 트랙 추출
+    caption_tracks = data.get("captions", {}).get("playerCaptionsTracklistRenderer", {}).get("captionTracks", [])
 
     if not caption_tracks:
-        track_match = re.search(r'"captionTracks":(\[.*?\])', html)
-        if track_match:
-            try:
-                caption_tracks = json.loads(track_match.group(1))
-            except: pass
+        # 영상 제목 추출 (상세 에러 메시지용)
+        video_title = data.get("videoDetails", {}).get("title", "알 수 없는 영상")
+        raise Exception(f"[{video_title}] 영상에는 추출 가능한 자막 데이터가 존재하지 않습니다.")
 
-    # 🚨 자막이 없을 때, "내가 영상 제목까지 다 읽어왔는데 자막만 없는 거야!" 라고 사용자에게 증명
-    if not caption_tracks:
-        raise Exception(f"[{video_title}] 영상에는 생성된 자막(CC)이 물리적으로 존재하지 않습니다. 자막 기능이 있는 다른 영상으로 시도해주세요.")
-
-    # 4. 최우선 순위: 영어(en) -> 한국어(ko) -> 첫 번째 자막
+    # 5. 최우선 순위: 영어(en) -> 한국어(ko) -> 첫 번째 자막
     target_track = next((track for track in caption_tracks if track.get('languageCode') == 'en'), None)
     if not target_track:
         target_track = next((track for track in caption_tracks if track.get('languageCode') == 'ko'), None)
@@ -103,61 +87,32 @@ def fetch_transcript_stealth(video_id: str):
 
     xml_url = target_track['baseUrl']
 
-    # 5. 자막 원본 파일 다운로드 (이 부분도 프록시 태우기)
-    encoded_xml_url = urllib.parse.quote(xml_url)
-    xml_proxy_urls = [
-        xml_url,
-        f"https://api.allorigins.win/raw?url={encoded_xml_url}",
-        f"https://api.codetabs.com/v1/proxy?quest={encoded_xml_url}"
-    ]
-
-    raw_text = None
-    for px_url in xml_proxy_urls:
-        try:
-            print("🌐 자막 원본 파일 다운로드 중...")
-            px_res = requests.get(px_url, headers=headers, timeout=10)
-            if px_res.status_code == 200 and len(px_res.text) > 10:
-                raw_text = px_res.text
-                print("✅ 자막 파일 획득 완료!")
-                break
-        except: pass
-
-    if not raw_text:
-        raise Exception("자막 파일 다운로드 중 서버 연결이 거부되었습니다.")
-
-    # 6. 포맷 파싱 (XML 또는 JSON3 자동 인식)
-    data = []
-    raw_text = raw_text.strip()
+    # 6. 자막 원본 파일 다운로드 및 파싱
+    print("✅ 자막 파일 획득 완료! 파싱 진행 중...")
     try:
-        # JSON 포맷일 경우
-        if raw_text.startswith('{'):
-            json_data = json.loads(raw_text)
-            for event in json_data.get('events', []):
-                if 'segs' in event:
-                    text_content = "".join([seg.get('utf8', '') for seg in event['segs']]).replace('\n', ' ').strip()
-                    if text_content:
-                        data.append({'start': event.get('tStartMs', 0) / 1000.0, 'text': text_content})
-        # XML 포맷일 경우
-        else:
-            root = ET.fromstring(raw_text)
-            for child in root:
-                if child.tag == 'text':
-                    start = float(child.attrib.get('start', 0))
-                    text_content = child.text
-                    if text_content:
-                        text_content = text_content.replace('&amp;', '&').replace('&#39;', "'").replace('&quot;', '"')
-                        data.append({'start': start, 'text': text_content})
-    except Exception as e:
-        raise Exception(f"자막 변환 실패: {e}")
-
-    if not data:
-        raise Exception("추출된 텍스트가 없습니다.")
+        xml_res = requests.get(xml_url, headers=headers, timeout=10)
+        parsed_data = []
+        root = ET.fromstring(xml_res.text)
         
-    return data
+        for child in root:
+            if child.tag == 'text':
+                start = float(child.attrib.get('start', 0))
+                text_content = child.text
+                if text_content:
+                    text_content = text_content.replace('&amp;', '&').replace('&#39;', "'").replace('&quot;', '"')
+                    parsed_data.append({'start': start, 'text': text_content})
+                    
+        if not parsed_data:
+            raise Exception("파싱된 텍스트가 비어있습니다.")
+            
+        return parsed_data
+        
+    except Exception as e:
+        raise Exception(f"자막 데이터 변환 실패: {e}")
 
 @app.get("/")
 def health_check():
-    return {"status": "ok", "message": "초대형 CORS Proxy 스텔스 엔진 실행 중!"}
+    return {"status": "ok", "message": "iOS 모바일 위장(Spoofing) 아키텍처 실행 중!"}
 
 @app.get("/api/analyze")
 def analyze_youtube_video(video_url: str):
@@ -165,16 +120,16 @@ def analyze_youtube_video(video_url: str):
     if not video_id:
         raise HTTPException(status_code=400, detail="유효하지 않은 유튜브 URL입니다.")
 
-    # 1. 프록시 기반 스텔스 자막 추출
+    # 1. iOS 모바일 앱 스푸핑을 통한 자막 추출
     try:
-        data = fetch_transcript_stealth(video_id)
+        data = fetch_transcript_ios_spoof(video_id)
         full_text = " ".join([t['text'] for t in data])
         print(f"✅ 최종 자막 확보 성공! 전체 길이: {len(full_text)}")
     except Exception as e:
         print(f"❌ 자막 추출 에러: {e}")
         raise HTTPException(status_code=400, detail=f"자막 추출 실패: {str(e)}")
 
-    # 2. AI 분석 (정확히 '한 문장씩' 1:1 매칭 번역)
+    # 2. AI 분석 (요구사항: 정확히 '한 문장씩' 1:1 매칭 번역)
     try:
         print("Gemini AI로 한 문장씩 번역 요청 중...")
         prompt = f"""
