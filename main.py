@@ -32,15 +32,25 @@ def extract_video_id(url: str):
     match = re.search(r"(?:v=|\/)([0-9A-Za-z_-]{11}).*", url)
     return match.group(1) if match else None
 
-# 🚨 [핵심] Render IP 차단을 뚫기 위한 '서드파티 우회(Bypass) API' 함수
+# 🚨 [핵심] 우회 서버의 Bot 차단(WAF)을 뚫기 위한 브라우저 위장(Spoofing) 함수
 def fetch_transcript_bypass(video_id):
     try:
-        # 유튜브를 직접 찌르지 않고, 외부 전용 서버를 우회하여 자막을 가로챕니다.
         url = f"https://youtubetranscript.com/?server_vid2={video_id}"
-        response = requests.get(url, timeout=10)
+        
+        # 기계(Python)가 아닌 진짜 사람(Chrome 브라우저)인 것처럼 완벽하게 위장하는 헤더
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept': 'application/xml, text/xml, */*; q=0.01',
+            'Accept-Language': 'ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7',
+            'Referer': 'https://youtubetranscript.com/',
+            'Origin': 'https://youtubetranscript.com'
+        }
+        
+        # 15초 넉넉한 타임아웃과 함께 위장 헤더를 실어서 요청
+        response = requests.get(url, headers=headers, timeout=15)
         
         if response.status_code != 200:
-            raise Exception("우회 서버 연결 실패")
+            raise Exception(f"우회 서버 연결 실패 (HTTP {response.status_code})")
         
         root = ET.fromstring(response.content)
         if root.tag == 'error':
@@ -62,7 +72,7 @@ def fetch_transcript_bypass(video_id):
 
 @app.get("/")
 def health_check():
-    return {"status": "ok", "message": "강력한 우회(Proxy) 추출 기능이 탑재된 서버입니다."}
+    return {"status": "ok", "message": "강력한 우회(Proxy) 및 브라우저 위장 기능이 탑재된 서버입니다."}
 
 @app.get("/api/analyze")
 def analyze_youtube_video(video_url: str):
@@ -76,13 +86,13 @@ def analyze_youtube_video(video_url: str):
         print("1차 시도: 기본 라이브러리로 추출 시도...")
         data = YouTubeTranscriptApi.get_transcript(video_id, languages=['en', 'ko'])
     except Exception as e1:
-        print(f"1차 시도 실패 (유튜브 IP 차단됨). 2차 우회 시도 시작...: {e1}")
+        print(f"1차 시도 실패 (유튜브 IP 차단 또는 버전 오류). 2차 우회 시도 시작...: {e1}")
         try:
-            print("2차 시도: 외부 프록시(Bypass) API를 통한 강제 추출...")
+            print("2차 시도: 브라우저 위장(Spoofing)을 통한 프록시 강제 추출...")
             data = fetch_transcript_bypass(video_id)
         except Exception as e2:
             print(f"2차 시도까지 실패: {e2}")
-            raise HTTPException(status_code=400, detail="자막 추출 실패: 해당 영상에 자막이 완전히 막혀있거나 존재하지 않습니다.")
+            raise HTTPException(status_code=400, detail=f"자막 추출 실패: 우회 서버 연결에 실패했습니다. 상세오류: {e2}")
 
     if not data:
         raise HTTPException(status_code=400, detail="자막 데이터를 찾을 수 없습니다.")
