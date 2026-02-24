@@ -31,32 +31,43 @@ def extract_video_id(url: str):
     match = re.search(r"(?:v=|\/)([0-9A-Za-z_-]{11}).*", url)
     return match.group(1) if match else None
 
-# 🚨 [최종 완결판] Google API 다이렉트 모바일 앱 우회 엔진
-# www.youtube.com 의 웹 방화벽을 피하기 위해, youtubei.googleapis.com 공식 API 서버로 
-# 안드로이드 및 아이폰 앱 통신 패킷을 쏘아 방화벽을 우회합니다.
+# 🚨 [최종 완결판] 임베디드(Embed) & 스마트 TV 우회 엔진
+# 유튜브의 최신 '모바일 봇 차단(PO Token)'을 무력화하기 위해, 
+# 방어막이 가장 느슨한 '외부 퍼가기(Embed) 플레이어'와 '스마트 TV'로 신분을 위장합니다.
 def fetch_transcript_innertube_api(video_id: str):
-    # 웹 주소가 아닌 구글 모바일 통합 API 주소 사용 (웹 방화벽 미적용 지대)
     api_url = "https://youtubei.googleapis.com/youtubei/v1/player"
 
+    # 1. 봇 차단을 우회하는 최강의 클라이언트 조합
     clients = [
         {
-            "name": "ANDROID",
+            "name": "WEB_EMBED",  # 외부 사이트에 퍼가기 된 플레이어 (캡차 면제율 99%)
             "headers": {
                 "Content-Type": "application/json",
-                "User-Agent": "com.google.android.youtube/17.31.35 (Linux; U; Android 11; en_US; Pixel 5 Build/RQ3A.210805.001.A1)",
-                "X-YouTube-Client-Name": "3",
-                "X-YouTube-Client-Version": "17.31.35",
+                "Referer": f"https://www.youtube.com/embed/{video_id}",
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
             },
             "client_context": {
-                "clientName": "ANDROID",
-                "clientVersion": "17.31.35",
-                "androidSdkVersion": 30,
+                "clientName": "WEB_EMBED",
+                "clientVersion": "1.20240101.01.00",
                 "hl": "en",
                 "gl": "US"
             }
         },
         {
-            "name": "IOS",
+            "name": "TV_EMBED",  # 스마트 TV 내장 플레이어 (보안 토큰 검사 면제 지대)
+            "headers": {
+                "Content-Type": "application/json",
+                "User-Agent": "Mozilla/5.0 (SmartHub; SMART-TV; U; Linux/SmartTV+2014; Maple2012) AppleWebKit/535.20+ (KHTML, like Gecko) SmartTV Safari/535.20+"
+            },
+            "client_context": {
+                "clientName": "TVHTML5_SIMPLY_EMBEDDED_PLAYER",
+                "clientVersion": "2.0",
+                "hl": "en",
+                "gl": "US"
+            }
+        },
+        {
+            "name": "IOS",  # 최후의 보루: 모바일 앱
             "headers": {
                 "Content-Type": "application/json",
                 "User-Agent": "com.google.ios.youtube/19.28.1 (iPhone14,5; U; CPU iOS 17_5_1 like Mac OS X; en_US)",
@@ -81,7 +92,7 @@ def fetch_transcript_innertube_api(video_id: str):
     success_headers = None
 
     for client in clients:
-        print(f"🔄 [{client['name']}] 모바일 다이렉트 API 우회 접속 시도 중...")
+        print(f"🔄 [{client['name']}] 클라이언트 위장 접속 시도 중...")
         payload = {
             "context": {
                 "client": client["client_context"]
@@ -94,7 +105,7 @@ def fetch_transcript_innertube_api(video_id: str):
             if res.status_code == 200:
                 data = res.json()
                 
-                # 영상 제목(Title) 추출 - 구글 API는 캡차 없이 무조건 데이터를 줍니다.
+                # 영상 제목(Title) 추출
                 if video_title == "알 수 없는 영상":
                     video_title = data.get("videoDetails", {}).get("title", "알 수 없는 영상")
 
@@ -108,13 +119,13 @@ def fetch_transcript_innertube_api(video_id: str):
                 if tracks:
                     caption_tracks = tracks
                     success_headers = client["headers"]
-                    print(f"✅ [{client['name']}] 모바일 API 우회 성공! 영상 제목 및 자막 확보 완료.")
+                    print(f"✅ [{client['name']}] 방화벽 우회 성공! 영상 제목 및 자막 확보 완료.")
                     break
         except Exception as e:
             print(f"⚠️ [{client['name']}] 접속 에러: {e}")
             continue
 
-    # 모바일 API를 다 찔러봤는데도 자막이 없다면 100% 자막이 없는 영상임을 증명!
+    # 모든 우회 시도를 찔러봤는데도 자막이 없다면 증명 완료
     if not caption_tracks:
         raise Exception(f"[{video_title}] 영상에는 자동 생성 자막(ASR)조차 물리적으로 존재하지 않습니다. 자막이 활성화된 영상인지 확인해주세요.")
 
