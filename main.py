@@ -1,11 +1,11 @@
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 import google.generativeai as genai
+import yt_dlp
+import requests
 import os
 import re
 import json
-import requests
-import xml.etree.ElementTree as ET
 import traceback
 
 app = FastAPI()
@@ -26,121 +26,93 @@ if GEMINI_API_KEY:
 
 model = genai.GenerativeModel('gemini-1.5-flash')
 
-def extract_video_id(url: str):
-    """유튜브 URL에서 11자리 고유 영상 ID를 추출"""
-    match = re.search(r"(?:v=|\/)([0-9A-Za-z_-]{11}).*", url)
-    return match.group(1) if match else None
+# 🚨 [최종 필살기] yt-dlp 기반 산업 표준 유튜브 추출 엔진
+# 데이터센터 IP 차단을 우회하기 위해 내부 프로토콜을 모방합니다.
+def fetch_transcript_ytdlp(video_url: str):
+    print(f"yt-dlp 엔진 가동 중... 대상: {video_url}")
+    
+    ydl_opts = {
+        'quiet': True,
+        'skip_download': True,
+        'extract_flat': False,
+    }
+    
+    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        try:
+            info = ydl.extract_info(video_url, download=False)
+        except Exception as e:
+            raise Exception(f"yt-dlp 영상 정보 추출 실패: {str(e)}")
 
-# 🚨 [최종 필살기] 유튜브 내부망(InnerTube API) 우회 크롤링 엔진
-def fetch_transcript_direct(video_id):
-    try:
-        url = f"https://www.youtube.com/watch?v={video_id}"
-        
-        # 완벽한 브라우저 위장 및 쿠키 설정
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Accept-Language': 'en-US,en;q=0.9,ko;q=0.8',
-        }
-        cookies = {'CONSENT': 'YES+cb.20210328-17-p0.en+FX+478'}
-        
-        response = requests.get(url, headers=headers, cookies=cookies, timeout=10)
-        html = response.text
+        subs = info.get('subtitles', {})
+        auto_subs = info.get('automatic_captions', {})
 
-        caption_tracks = []
+        target_url = None
 
-        # [전략 1] HTML 내 'captions' 객체 정밀 타격 (유튜브가 가짜 페이지를 주지 않았을 경우)
-        match1 = re.search(r'"captions":({"playerCaptionsTracklistRenderer":{.*?}})', html)
-        if match1:
-            try:
-                captions_json = json.loads(match1.group(1))
-                caption_tracks = captions_json.get('playerCaptionsTracklistRenderer', {}).get('captionTracks', [])
-            except: pass
+        # 1. 수동/자동 영어 자막(json3 포맷) 탐색
+        if 'en' in subs:
+            target_url = next((fmt['url'] for fmt in subs['en'] if fmt['ext'] == 'json3'), None)
+        if not target_url and 'en' in auto_subs:
+            target_url = next((fmt['url'] for fmt in auto_subs['en'] if fmt['ext'] == 'json3'), None)
+            
+        # 2. 수동/자동 한국어 자막 탐색
+        if not target_url and 'ko' in subs:
+            target_url = next((fmt['url'] for fmt in subs['ko'] if fmt['ext'] == 'json3'), None)
+        if not target_url and 'ko' in auto_subs:
+            target_url = next((fmt['url'] for fmt in auto_subs['ko'] if fmt['ext'] == 'json3'), None)
 
-        # [전략 2] 전체 PlayerResponse 파싱
-        if not caption_tracks:
-            match2 = re.search(r'ytInitialPlayerResponse\s*=\s*({.+?});', html)
-            if match2:
-                try:
-                    player_response = json.loads(match2.group(1))
-                    caption_tracks = player_response.get('captions', {}).get('playerCaptionsTracklistRenderer', {}).get('captionTracks', [])
-                except: pass
+        # 3. 영/한이 없으면 아무 언어나 첫 번째 자막 추출
+        if not target_url:
+            if subs:
+                first_lang = list(subs.keys())[0]
+                target_url = next((fmt['url'] for fmt in subs[first_lang] if fmt['ext'] == 'json3'), None)
+            elif auto_subs:
+                first_lang = list(auto_subs.keys())[0]
+                target_url = next((fmt['url'] for fmt in auto_subs[first_lang] if fmt['ext'] == 'json3'), None)
 
-        # 🚨 [전략 3 - 최종 병기] 유튜브 내부망(InnerTube API) 직접 해킹!
-        # HTML 스크래핑이 막히면 페이지 내부에 숨겨진 API 키를 탈취해 직접 POST 요청을 쏩니다.
-        if not caption_tracks:
-            print("HTML 스크래핑 차단됨. InnerTube API 직접 호출 시도...")
-            key_match = re.search(r'"INNERTUBE_API_KEY":"(.*?)"', html)
-            if key_match:
-                api_key = key_match.group(1)
-                api_url = f"https://www.youtube.com/youtubei/v1/player?key={api_key}"
-                payload = {
-                    "context": {
-                        "client": {
-                            "clientName": "WEB",
-                            "clientVersion": "2.20230728.00.00",
-                            "hl": "en",
-                            "gl": "US"
-                        }
-                    },
-                    "videoId": video_id
-                }
-                api_response = requests.post(api_url, json=payload, headers=headers, timeout=10)
-                if api_response.status_code == 200:
-                    player_response = api_response.json()
-                    caption_tracks = player_response.get('captions', {}).get('playerCaptionsTracklistRenderer', {}).get('captionTracks', [])
+        if not target_url:
+            raise Exception("이 영상에는 어떠한 자막 데이터도 존재하지 않습니다.")
 
-        if not caption_tracks:
-            raise Exception("영상에 자막이 없거나, 유튜브 봇 탐지 시스템에 의해 완벽히 차단되었습니다.")
+        # 자막 URL 다운로드 및 파싱
+        print("자막 URL 확보 성공. 다운로드 중...")
+        res = requests.get(target_url)
+        if res.status_code != 200:
+            raise Exception("자막 파일 다운로드 중 서버 연결이 거부되었습니다.")
 
-        # 최우선 순위: 영어(en) -> 한국어(ko) -> 첫 번째 자막
-        target_track = next((track for track in caption_tracks if track.get('languageCode') == 'en'), None)
-        if not target_track:
-            target_track = next((track for track in caption_tracks if track.get('languageCode') == 'ko'), None)
-        if not target_track:
-            target_track = caption_tracks[0]
-
-        # 자막 원본 XML 다운로드 및 파싱
-        xml_url = target_track['baseUrl']
-        xml_response = requests.get(xml_url, timeout=10)
-        root = ET.fromstring(xml_response.text)
-
+        json3_data = res.json()
         data = []
-        for child in root:
-            if child.tag == 'text':
-                start = float(child.attrib.get('start', 0))
-                text_content = child.text
-                if text_content:
-                    # HTML 특수문자 디코딩
-                    text_content = text_content.replace('&amp;', '&').replace('&#39;', "'").replace('&quot;', '"')
-                    data.append({'start': start, 'text': text_content})
+        
+        # JSON3 포맷에서 텍스트와 시간만 정밀하게 파싱
+        for event in json3_data.get('events', []):
+            if 'segs' in event:
+                text = "".join([seg.get('utf8', '') for seg in event['segs']]).replace('\n', ' ').strip()
+                if text:
+                    data.append({
+                        'start': event.get('tStartMs', 0) / 1000.0,
+                        'text': text
+                    })
 
         if not data:
-            raise Exception("추출된 텍스트가 없습니다.")
-        
+            raise Exception("파싱된 자막 텍스트가 비어있습니다.")
+            
         return data
-
-    except Exception as e:
-        raise Exception(f"{str(e)}")
 
 @app.get("/")
 def health_check():
-    return {"status": "ok", "message": "Zero-Dependency 독자 추출 엔진이 탑재된 서버입니다."}
+    return {"status": "ok", "message": "yt-dlp 기반 최강의 우회 서버가 실행 중입니다."}
 
 @app.get("/api/analyze")
 def analyze_youtube_video(video_url: str):
-    video_id = extract_video_id(video_url)
-    if not video_id:
+    if "youtube.com" not in video_url and "youtu.be" not in video_url:
         raise HTTPException(status_code=400, detail="유효하지 않은 유튜브 URL입니다.")
 
-    # 1. 자막 직접 추출
+    # 1. 자막 추출 (yt-dlp 적용)
     try:
-        print(f"독자 엔진으로 유튜브 직접 추출 시도: {video_id}")
-        data = fetch_transcript_direct(video_id)
+        data = fetch_transcript_ytdlp(video_url)
         full_text = " ".join([t['text'] for t in data])
-        print(f"✅ 자막 직접 추출 완벽 성공! 전체 길이: {len(full_text)}")
+        print(f"✅ yt-dlp 자막 추출 완벽 성공! 전체 길이: {len(full_text)}")
     except Exception as e:
         print(f"❌ 자막 추출 에러: {e}")
-        raise HTTPException(status_code=400, detail=f"자막 추출 실패: 비공개 영상이거나 자막이 아예 없습니다. 영상에 [CC] 아이콘이 있는지 확인해주세요. 상세: {e}")
+        raise HTTPException(status_code=400, detail=f"자막 추출 실패: {str(e)}")
 
     # 2. AI 분석 (요구사항: 정확히 '한 문장씩' 1:1 매칭 번역)
     try:
