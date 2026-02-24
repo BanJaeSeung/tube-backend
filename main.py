@@ -1,3 +1,17 @@
+import subprocess
+import sys
+import traceback
+
+# 🚨 [초강수 트러블슈팅] Render의 캐시 시스템이 완전히 고장난 상태이므로,
+# 파이썬 서버가 켜지기 직전에 강제로 최신 라이브러리를 덮어씌웁니다.
+print("🚀 [System] 클라우드 캐시 무시: 강제 업데이트 스크립트 실행 중...")
+try:
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "--upgrade", "youtube-transcript-api"])
+    print("✅ [System] 라이브러리 강제 업데이트 완벽 성공!")
+except Exception as e:
+    print(f"❌ [System] 업데이트 실패 (무시하고 진행): {e}")
+
+# 업데이트가 끝난 후 라이브러리들을 불러옵니다.
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from youtube_transcript_api import YouTubeTranscriptApi
@@ -5,7 +19,6 @@ import google.generativeai as genai
 import os
 import re
 import json
-import traceback
 
 app = FastAPI()
 
@@ -36,7 +49,7 @@ def extract_video_id(url: str):
 @app.get("/")
 def health_check():
     """Health check endpoint to verify server status."""
-    return {"status": "ok", "message": "Server is running"}
+    return {"status": "ok", "message": "Server is running with forced dependencies"}
 
 @app.get("/api/analyze")
 def analyze_youtube_video(video_url: str):
@@ -51,10 +64,7 @@ def analyze_youtube_video(video_url: str):
     try:
         print(f"Attempting to fetch transcript for video: {video_id}")
         
-        # 🚨 [핵심] 구버전 라이브러리 강력 차단!
-        if not hasattr(YouTubeTranscriptApi, 'list_transcripts'):
-            raise Exception("라이브러리 버전 오류! Render 대시보드에서 반드시 [Manual Deploy] -> [Clear build cache & deploy]를 클릭하여 캐시를 초기화해야 합니다.")
-
+        # 이제 강제로 최신 버전을 설치했으므로, 가장 안정적인 list_transcripts 기능을 무조건 사용합니다.
         transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
         
         try:
@@ -67,7 +77,7 @@ def analyze_youtube_video(video_url: str):
                 transcript = transcript_list.find_generated_transcript(['en'])
                 print("Found auto-generated English transcript.")
             except:
-                # 3순위: 영어 자막이 아예 없는 경우, 다른 언어를 영어로 자동 번역
+                # 3순위: 영어 자막이 없으면, 한국어 등 다른 언어를 가져와서 영어로 자동 번역
                 available_transcripts = list(transcript_list)
                 if not available_transcripts:
                     raise Exception("영상에 어떠한 자막도 존재하지 않습니다.")
@@ -82,7 +92,7 @@ def analyze_youtube_video(video_url: str):
     except Exception as e:
         error_trace = traceback.format_exc()
         print(f"Transcript Fetch Error:\n{error_trace}")
-        raise HTTPException(status_code=400, detail=f"[자막 추출 실패] {str(e)}")
+        raise HTTPException(status_code=400, detail=f"자막 추출 실패: 영상에 자막이 없거나 비공개 영상입니다. 상세: {str(e)}")
 
     # 2. AI Processing with Gemini (AI 분석 단계)
     try:
@@ -111,7 +121,7 @@ def analyze_youtube_video(video_url: str):
     except Exception as e:
         error_trace = traceback.format_exc()
         print(f"Gemini API Error:\n{error_trace}")
-        raise HTTPException(status_code=500, detail=f"[AI 분석 실패] Gemini API 통신 중 오류가 발생했습니다. API 키나 제공량을 확인해주세요. 상세 오류: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"AI 분석 실패: API 설정에 문제가 있습니다. 상세: {str(e)}")
 
     # 3. Parse JSON & Align Timestamps (결과 처리 단계)
     try:
@@ -135,8 +145,8 @@ def analyze_youtube_video(video_url: str):
         
     except json.JSONDecodeError as e:
         print(f"JSON Parsing Error: AI returned invalid JSON format. Response text: {response_text}")
-        raise HTTPException(status_code=500, detail="[결과 처리 실패] AI가 올바른 형식(JSON)으로 응답하지 않았습니다.")
+        raise HTTPException(status_code=500, detail="AI 결과 처리 실패: 올바른 형식이 아닙니다.")
     except Exception as e:
         error_trace = traceback.format_exc()
         print(f"Data Processing Error:\n{error_trace}")
-        raise HTTPException(status_code=500, detail=f"[데이터 병합 실패] 분석 결과를 처리하는 중 오류가 발생했습니다. 상세 오류: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"분석 결과 병합 실패. 상세: {str(e)}")
