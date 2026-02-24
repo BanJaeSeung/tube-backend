@@ -7,6 +7,7 @@ import os
 import re
 import json
 import traceback
+import urllib.parse
 
 app = FastAPI()
 
@@ -31,158 +32,124 @@ def extract_video_id(url: str):
     match = re.search(r"(?:v=|\/)([0-9A-Za-z_-]{11}).*", url)
     return match.group(1) if match else None
 
-# 🚨 [만능 자막 파서] XML, JSON3, WebVTT 등 각 노드마다 다르게 주는 포맷을 완벽하게 파싱
-def parse_universal_subtitles(sub_text: str):
-    parsed_data = []
-    sub_text = sub_text.strip()
-    
-    # 1. XML 파싱 (유튜브 기본 포맷)
-    if sub_text.startswith('<?xml') or sub_text.startswith('<transcript'):
+# 🚨 [진짜 최종 완결판] 대용량 웹 프록시(CORS Proxy) 기반 스텔스 엔진
+def fetch_transcript_stealth(video_id: str):
+    target_url = f"https://www.youtube.com/watch?v={video_id}"
+    encoded_url = urllib.parse.quote(target_url)
+
+    # 1. Render IP 차단을 무력화하기 위해 초대형 무료 퍼블릭 프록시들을 거쳐 유튜브를 찌릅니다.
+    proxy_urls = [
+        target_url, # 혹시 차단이 풀렸을 경우를 대비한 다이렉트 요청
+        f"https://api.allorigins.win/raw?url={encoded_url}",
+        f"https://api.codetabs.com/v1/proxy?quest={encoded_url}",
+        f"https://corsproxy.io/?{encoded_url}"
+    ]
+
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept-Language': 'en-US,en;q=0.9,ko;q=0.8',
+        'Cookie': 'CONSENT=YES+cb.20210328-17-p0.en+FX+478'
+    }
+
+    html = None
+    for p_url in proxy_urls:
         try:
-            root = ET.fromstring(sub_text)
+            print(f"🌐 프록시 스텔스 접속 시도 중: {p_url[:50]}...")
+            res = requests.get(p_url, headers=headers, timeout=10)
+            if res.status_code == 200 and 'ytInitialPlayerResponse' in res.text:
+                html = res.text
+                print("✅ 유튜브 원본 HTML 데이터 프록시 획득 성공!")
+                break
+        except Exception as e:
+            print(f"⚠️ 프록시 접속 실패: {e}")
+            continue
+
+    if not html:
+        raise Exception("유튜브 방화벽이 너무 강력하여 모든 글로벌 프록시망이 차단되었습니다.")
+
+    # 2. HTML 내부에 숨겨진 자막 JSON 데이터(ytInitialPlayerResponse) 추출
+    caption_tracks = []
+    match = re.search(r'ytInitialPlayerResponse\s*=\s*({.+?})\s*;\s*(?:var\s+meta|<\/script|\n)', html)
+    if match:
+        try:
+            player_response = json.loads(match.group(1))
+            caption_tracks = player_response.get('captions', {}).get('playerCaptionsTracklistRenderer', {}).get('captionTracks', [])
+        except: pass
+
+    if not caption_tracks:
+        track_match = re.search(r'"captionTracks":(\[.*?\])', html)
+        if track_match:
+            try:
+                caption_tracks = json.loads(track_match.group(1))
+            except: pass
+
+    if not caption_tracks:
+        raise Exception("이 영상에는 생성된 자막(CC)이 존재하지 않거나 데이터가 누락되었습니다.")
+
+    # 3. 최우선 순위: 영어(en) -> 한국어(ko) -> 첫 번째 자막
+    target_track = next((track for track in caption_tracks if track.get('languageCode') == 'en'), None)
+    if not target_track:
+        target_track = next((track for track in caption_tracks if track.get('languageCode') == 'ko'), None)
+    if not target_track:
+        target_track = caption_tracks[0]
+
+    xml_url = target_track['baseUrl']
+
+    # 4. 자막 원본 파일 다운로드 (이 부분도 프록시 태우기)
+    encoded_xml_url = urllib.parse.quote(xml_url)
+    xml_proxy_urls = [
+        xml_url,
+        f"https://api.allorigins.win/raw?url={encoded_xml_url}",
+        f"https://api.codetabs.com/v1/proxy?quest={encoded_xml_url}"
+    ]
+
+    raw_text = None
+    for px_url in xml_proxy_urls:
+        try:
+            print("🌐 자막 원본 파일 다운로드 중...")
+            px_res = requests.get(px_url, headers=headers, timeout=10)
+            if px_res.status_code == 200 and len(px_res.text) > 10:
+                raw_text = px_res.text
+                print("✅ 자막 파일 획득 완료!")
+                break
+        except: pass
+
+    if not raw_text:
+        raise Exception("자막 파일 다운로드 중 서버 연결이 거부되었습니다.")
+
+    # 5. 포맷 파싱 (XML 또는 JSON3 자동 인식)
+    data = []
+    raw_text = raw_text.strip()
+    try:
+        # JSON 포맷일 경우
+        if raw_text.startswith('{'):
+            json_data = json.loads(raw_text)
+            for event in json_data.get('events', []):
+                if 'segs' in event:
+                    text_content = "".join([seg.get('utf8', '') for seg in event['segs']]).replace('\n', ' ').strip()
+                    if text_content:
+                        data.append({'start': event.get('tStartMs', 0) / 1000.0, 'text': text_content})
+        # XML 포맷일 경우
+        else:
+            root = ET.fromstring(raw_text)
             for child in root:
                 if child.tag == 'text':
                     start = float(child.attrib.get('start', 0))
                     text_content = child.text
                     if text_content:
                         text_content = text_content.replace('&amp;', '&').replace('&#39;', "'").replace('&quot;', '"')
-                        parsed_data.append({'start': start, 'text': text_content})
-            if parsed_data: return parsed_data
-        except: pass
+                        data.append({'start': start, 'text': text_content})
+    except Exception as e:
+        raise Exception(f"자막 변환 실패: {e}")
 
-    # 2. JSON3 파싱 (Piped 망 제공 포맷)
-    if sub_text.startswith('{'):
-        try:
-            json_data = json.loads(sub_text)
-            for event in json_data.get('events', []):
-                if 'segs' in event:
-                    text_content = "".join([seg.get('utf8', '') for seg in event['segs']]).replace('\n', ' ').strip()
-                    if text_content:
-                        parsed_data.append({
-                            'start': event.get('tStartMs', 0) / 1000.0,
-                            'text': text_content
-                        })
-            if parsed_data: return parsed_data
-        except: pass
-
-    # 3. WebVTT 파싱 (Invidious 망 제공 포맷)
-    if "WEBVTT" in sub_text:
-        try:
-            blocks = sub_text.split('\n\n')
-            for block in blocks:
-                lines = block.strip().split('\n')
-                time_line = None
-                text_lines = []
-                
-                for i, line in enumerate(lines):
-                    if '-->' in line:
-                        time_line = line
-                        text_lines = lines[i+1:]
-                        break
-                        
-                if time_line:
-                    time_str = time_line.split('-->')[0].strip()
-                    parts = time_str.split(':')
-                    try:
-                        if len(parts) == 3: # 00:00:05.000 형식
-                            start = float(parts[0])*3600 + float(parts[1])*60 + float(parts[2].replace(',', '.'))
-                        elif len(parts) == 2: # 00:05.000 형식
-                            start = float(parts[0])*60 + float(parts[1].replace(',', '.'))
-                        else:
-                            start = 0.0
-                            
-                        text = " ".join(text_lines).strip()
-                        text = re.sub(r'<[^>]+>', '', text) # HTML/VTT 태그 제거
-                        if text:
-                            parsed_data.append({'start': start, 'text': text})
-                    except:
-                        pass
-            if parsed_data: return parsed_data
-        except: pass
-            
-    return parsed_data
-
-# 🚨 [최종 완결판] Invidious + Piped 하이브리드 분산 노드 우회 엔진
-def fetch_transcript_decentralized(video_id: str):
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-    }
-
-    # 1. Invidious 노드 풀 (안정성 최상, 최우선 시도)
-    invidious_nodes = [
-        "https://invidious.fdn.fr",
-        "https://yt.artemislena.eu",
-        "https://invidious.perennialte.ch",
-        "https://invidious.flokinet.to",
-        "https://inv.tux.pizza",
-        "https://invidious.lunar.icu",
-        "https://invidious.projectsegfau.lt"
-    ]
-    
-    for node in invidious_nodes:
-        try:
-            print(f"🌐 Invidious 망 우회 시도 중: {node}")
-            res = requests.get(f"{node}/api/v1/videos/{video_id}", headers=headers, timeout=6)
-            if res.status_code != 200: continue
-            
-            captions = res.json().get('captions', [])
-            if not captions: continue
-            
-            target = next((c for c in captions if c.get('languageCode') == 'en'), None)
-            if not target: target = next((c for c in captions if c.get('languageCode') == 'ko'), None)
-            if not target: target = captions[0]
-            
-            cap_url = node + target.get('url')
-            cap_res = requests.get(cap_url, headers=headers, timeout=6)
-            if cap_res.status_code == 200:
-                parsed = parse_universal_subtitles(cap_res.text)
-                if parsed: 
-                    print(f"✅ Invidious 노드({node})에서 자막 탈취 성공!")
-                    return parsed
-        except Exception as e:
-            print(f"⚠️ 노드 연결 실패 ({node}): {e}")
-            continue
-
-    # 2. Piped 노드 풀 (Invidious망 전멸 시 페일오버 작동)
-    piped_nodes = [
-        "https://api.piped.privacydev.net",
-        "https://pipedapi.tokhmi.xyz",
-        "https://pipedapi.syncpundit.io",
-        "https://pipedapi.smnz.de",
-        "https://piped-api.garudalinux.org",
-        "https://pipedapi.drgns.space"
-    ]
-
-    for node in piped_nodes:
-        try:
-            print(f"🌐 Piped 망 페일오버(Failover) 시도 중: {node}")
-            res = requests.get(f"{node}/streams/{video_id}", headers=headers, timeout=6)
-            if res.status_code != 200: continue
-            
-            subtitles = res.json().get('subtitles', [])
-            if not subtitles: continue
-            
-            target = next((s for s in subtitles if s.get('code') == 'en' and not s.get('autoGenerated')), None)
-            if not target: target = next((s for s in subtitles if s.get('code') == 'en'), None)
-            if not target: target = next((s for s in subtitles if s.get('code') == 'ko'), None)
-            if not target: target = subtitles[0]
-                
-            sub_url = target.get('url')
-            sub_res = requests.get(sub_url, headers=headers, timeout=6)
-            if sub_res.status_code == 200:
-                parsed = parse_universal_subtitles(sub_res.text)
-                if parsed: 
-                    print(f"✅ Piped 노드({node})에서 자막 탈취 성공!")
-                    return parsed
-        except Exception as e:
-            print(f"⚠️ 노드 연결 실패 ({node}): {e}")
-            continue
-            
-    raise Exception("모든 13개 글로벌 하이브리드 노드가 응답하지 않거나 차단되었습니다. 잠시 후 다시 시도해주세요.")
+    if not data:
+        raise Exception("추출된 텍스트가 없습니다.")
+        
+    return data
 
 @app.get("/")
 def health_check():
-    return {"status": "ok", "message": "Invidious+Piped 다중화 메쉬망(Hybrid Mesh) 엔진 실행 중!"}
+    return {"status": "ok", "message": "초대형 CORS Proxy 스텔스 엔진 실행 중!"}
 
 @app.get("/api/analyze")
 def analyze_youtube_video(video_url: str):
@@ -190,16 +157,16 @@ def analyze_youtube_video(video_url: str):
     if not video_id:
         raise HTTPException(status_code=400, detail="유효하지 않은 유튜브 URL입니다.")
 
-    # 1. 다중 분산 네트워크를 통한 자막 우회 추출
+    # 1. 프록시 기반 스텔스 자막 추출
     try:
-        data = fetch_transcript_decentralized(video_id)
+        data = fetch_transcript_stealth(video_id)
         full_text = " ".join([t['text'] for t in data])
         print(f"✅ 최종 자막 확보 성공! 전체 길이: {len(full_text)}")
     except Exception as e:
         print(f"❌ 자막 추출 에러: {e}")
         raise HTTPException(status_code=400, detail=f"자막 추출 실패: {str(e)}")
 
-    # 2. AI 분석 (요구사항: 정확히 '한 문장씩' 1:1 매칭 번역)
+    # 2. AI 분석 (정확히 '한 문장씩' 1:1 매칭 번역)
     try:
         print("Gemini AI로 한 문장씩 번역 요청 중...")
         prompt = f"""
@@ -224,7 +191,6 @@ def analyze_youtube_video(video_url: str):
         response = model.generate_content(prompt)
         response_text = response.text.strip()
         
-        # JSON 파싱 안정화
         if response_text.startswith("```json"):
             response_text = response_text[7:-3].strip()
         elif response_text.startswith("```"):
@@ -232,7 +198,6 @@ def analyze_youtube_video(video_url: str):
 
         ai_result = json.loads(response_text)
 
-        # 3. 타임스탬프 (시작 시간) 매칭
         chunk_size = max(1, len(data) // max(1, len(ai_result.get('script', [1]))))
         for i, item in enumerate(ai_result.get('script', [])):
             idx = min(i * chunk_size, len(data) - 1)
