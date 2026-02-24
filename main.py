@@ -67,12 +67,16 @@ def fetch_transcript_stealth(video_id: str):
     if not html:
         raise Exception("유튜브 방화벽이 너무 강력하여 모든 글로벌 프록시망이 차단되었습니다.")
 
-    # 2. HTML 내부에 숨겨진 자막 JSON 데이터(ytInitialPlayerResponse) 추출
+    # 2. HTML 내부에 숨겨진 자막 데이터와 영상 제목(Title) 추출
     caption_tracks = []
+    video_title = "알 수 없는 영상" # 제목 스니핑 변수
+    
     match = re.search(r'ytInitialPlayerResponse\s*=\s*({.+?})\s*;\s*(?:var\s+meta|<\/script|\n)', html)
     if match:
         try:
             player_response = json.loads(match.group(1))
+            # 영상 제목을 성공적으로 가져오면 증명 완료!
+            video_title = player_response.get('videoDetails', {}).get('title', video_title)
             caption_tracks = player_response.get('captions', {}).get('playerCaptionsTracklistRenderer', {}).get('captionTracks', [])
         except: pass
 
@@ -83,8 +87,9 @@ def fetch_transcript_stealth(video_id: str):
                 caption_tracks = json.loads(track_match.group(1))
             except: pass
 
+    # 🚨 자막이 없을 때, "내가 영상 제목까지 다 읽어왔는데 자막만 없는 거야!" 라고 사용자에게 증명
     if not caption_tracks:
-        raise Exception("이 영상에는 생성된 자막(CC)이 존재하지 않거나 데이터가 누락되었습니다.")
+        raise Exception(f"[{video_title}] 영상에는 생성된 자막(CC)이 물리적으로 존재하지 않습니다. 자막 기능이 있는 다른 영상으로 시도해주세요.")
 
     # 3. 최우선 순위: 영어(en) -> 한국어(ko) -> 첫 번째 자막
     target_track = next((track for track in caption_tracks if track.get('languageCode') == 'en'), None)
