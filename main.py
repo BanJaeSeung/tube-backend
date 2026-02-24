@@ -31,37 +31,43 @@ def extract_video_id(url: str):
     match = re.search(r"(?:v=|\/)([0-9A-Za-z_-]{11}).*", url)
     return match.group(1) if match else None
 
-# 🚨 [최종 필살기] 고장난 라이브러리나 막힌 외부 API를 전혀 쓰지 않고, 
-# 유튜브 원본 HTML에서 자막 데이터를 직접 뜯어오는 독자적인 크롤링 엔진
+# 🚨 [최종 필살기] 유튜브 원본 HTML에서 자막 데이터를 직접 뜯어오는 독자적인 크롤링 엔진
 def fetch_transcript_direct(video_id):
     try:
         url = f"https://www.youtube.com/watch?v={video_id}"
+        
+        # 🚨 쿠키 동의 화면(Consent Page) 우회 및 완벽한 브라우저 위장
         headers = {
             'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Accept-Language': 'en-US,en;q=0.9,ko;q=0.8'
+            'Accept-Language': 'en-US,en;q=0.9,ko;q=0.8',
+            'Cookie': 'CONSENT=YES+cb.20210328-17-p0.en+FX+478'
         }
         
         # 1. 유튜브 영상 페이지 HTML 가져오기
         response = requests.get(url, headers=headers, timeout=10)
         html = response.text
 
-        # 2. HTML 내부에 숨겨진 자막 JSON 데이터(ytInitialPlayerResponse) 정규식으로 찾기
-        match = re.search(r'ytInitialPlayerResponse\s*=\s*({.+?})\s*;\s*(?:var\s+meta|<\/script|\n)', html)
-        if not match:
-            raise Exception("유튜브 HTML에서 자막 데이터를 찾을 수 없습니다.")
+        caption_tracks = []
 
-        player_response = json.loads(match.group(1))
+        # 2. HTML 내부에 숨겨진 자막 JSON 데이터 탐지 (방법 A: 전체 PlayerResponse 추출)
+        match = re.search(r'ytInitialPlayerResponse\s*=\s*({.+?})\s*;\s*(?:var\s+meta|<\/script|\n)', html)
+        if match:
+            player_response = json.loads(match.group(1))
+            caption_tracks = player_response.get('captions', {}).get('playerCaptionsTracklistRenderer', {}).get('captionTracks', [])
         
-        # 3. 자막 트랙 리스트 추출
-        caption_tracks = player_response.get('captions', {}).get('playerCaptionsTracklistRenderer', {}).get('captionTracks', [])
-        
+        # 3. 이중 탐지망 (방법 B: captionTracks 배열만 직접 타겟팅 - 구조가 바뀌었을 때 대비)
         if not caption_tracks:
-            raise Exception("이 영상에는 생성된 자막이 없습니다.")
+            track_match = re.search(r'"captionTracks":(\[.*?\])', html)
+            if track_match:
+                caption_tracks = json.loads(track_match.group(1))
+
+        if not caption_tracks:
+            raise Exception("이 영상에는 생성된 자막(CC)이 없습니다. 유튜브에서 직접 자막 아이콘이 켜지는지 확인해주세요.")
 
         # 4. 최우선 순위: 영어(en) -> 한국어(ko) -> 첫 번째 자막
-        target_track = next((track for track in caption_tracks if track['languageCode'] == 'en'), None)
+        target_track = next((track for track in caption_tracks if track.get('languageCode') == 'en'), None)
         if not target_track:
-            target_track = next((track for track in caption_tracks if track['languageCode'] == 'ko'), None)
+            target_track = next((track for track in caption_tracks if track.get('languageCode') == 'ko'), None)
         if not target_track:
             target_track = caption_tracks[0]
 
@@ -98,7 +104,7 @@ def analyze_youtube_video(video_url: str):
     if not video_id:
         raise HTTPException(status_code=400, detail="유효하지 않은 유튜브 URL입니다.")
 
-    # 1. 자막 직접 추출 (라이브러리 버림)
+    # 1. 자막 직접 추출
     try:
         print(f"독자 엔진으로 유튜브 직접 추출 시도: {video_id}")
         data = fetch_transcript_direct(video_id)
@@ -106,7 +112,7 @@ def analyze_youtube_video(video_url: str):
         print(f"✅ 자막 직접 추출 완벽 성공! 전체 길이: {len(full_text)}")
     except Exception as e:
         print(f"❌ 자막 추출 에러: {e}")
-        raise HTTPException(status_code=400, detail=f"자막 추출 실패: 비공개 영상이거나 자막이 막혀있습니다. 상세오류: {e}")
+        raise HTTPException(status_code=400, detail=f"자막 추출 실패: 비공개 영상이거나 자막이 아예 없습니다. 영상에 [CC] 아이콘이 있는지 확인해주세요. 상세: {e}")
 
     # 2. AI 분석 (요구사항: 정확히 '한 문장씩' 1:1 매칭 번역)
     try:
