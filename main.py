@@ -67,16 +67,19 @@ def fetch_transcript_stealth(video_id: str):
     if not html:
         raise Exception("유튜브 방화벽이 너무 강력하여 모든 글로벌 프록시망이 차단되었습니다.")
 
-    # 2. HTML 내부에 숨겨진 자막 데이터와 영상 제목(Title) 추출
+    # 2. 🚨 영상 제목(Title) 100% 확실하게 추출 (HTML <title> 태그 스니핑)
+    video_title = "알 수 없는 영상" 
+    title_match = re.search(r'<title>(.*?)</title>', html, re.IGNORECASE)
+    if title_match:
+        # " - YouTube" 꼬리표 제거
+        video_title = title_match.group(1).replace(" - YouTube", "").replace("- YouTube", "").strip()
+
+    # 3. HTML 내부에 숨겨진 자막 데이터 추출
     caption_tracks = []
-    video_title = "알 수 없는 영상" # 제목 스니핑 변수
-    
     match = re.search(r'ytInitialPlayerResponse\s*=\s*({.+?})\s*;\s*(?:var\s+meta|<\/script|\n)', html)
     if match:
         try:
             player_response = json.loads(match.group(1))
-            # 영상 제목을 성공적으로 가져오면 증명 완료!
-            video_title = player_response.get('videoDetails', {}).get('title', video_title)
             caption_tracks = player_response.get('captions', {}).get('playerCaptionsTracklistRenderer', {}).get('captionTracks', [])
         except: pass
 
@@ -91,7 +94,7 @@ def fetch_transcript_stealth(video_id: str):
     if not caption_tracks:
         raise Exception(f"[{video_title}] 영상에는 생성된 자막(CC)이 물리적으로 존재하지 않습니다. 자막 기능이 있는 다른 영상으로 시도해주세요.")
 
-    # 3. 최우선 순위: 영어(en) -> 한국어(ko) -> 첫 번째 자막
+    # 4. 최우선 순위: 영어(en) -> 한국어(ko) -> 첫 번째 자막
     target_track = next((track for track in caption_tracks if track.get('languageCode') == 'en'), None)
     if not target_track:
         target_track = next((track for track in caption_tracks if track.get('languageCode') == 'ko'), None)
@@ -100,7 +103,7 @@ def fetch_transcript_stealth(video_id: str):
 
     xml_url = target_track['baseUrl']
 
-    # 4. 자막 원본 파일 다운로드 (이 부분도 프록시 태우기)
+    # 5. 자막 원본 파일 다운로드 (이 부분도 프록시 태우기)
     encoded_xml_url = urllib.parse.quote(xml_url)
     xml_proxy_urls = [
         xml_url,
@@ -122,7 +125,7 @@ def fetch_transcript_stealth(video_id: str):
     if not raw_text:
         raise Exception("자막 파일 다운로드 중 서버 연결이 거부되었습니다.")
 
-    # 5. 포맷 파싱 (XML 또는 JSON3 자동 인식)
+    # 6. 포맷 파싱 (XML 또는 JSON3 자동 인식)
     data = []
     raw_text = raw_text.strip()
     try:
