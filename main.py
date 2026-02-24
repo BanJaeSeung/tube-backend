@@ -31,47 +31,75 @@ def extract_video_id(url: str):
     match = re.search(r"(?:v=|\/)([0-9A-Za-z_-]{11}).*", url)
     return match.group(1) if match else None
 
-# 🚨 [최종 필살기] 유튜브 원본 HTML에서 자막 데이터를 직접 뜯어오는 독자적인 크롤링 엔진
+# 🚨 [최종 필살기] 유튜브 내부망(InnerTube API) 우회 크롤링 엔진
 def fetch_transcript_direct(video_id):
     try:
         url = f"https://www.youtube.com/watch?v={video_id}"
         
-        # 🚨 쿠키 동의 화면(Consent Page) 우회 및 완벽한 브라우저 위장
+        # 완벽한 브라우저 위장 및 쿠키 설정
         headers = {
-            'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
             'Accept-Language': 'en-US,en;q=0.9,ko;q=0.8',
-            'Cookie': 'CONSENT=YES+cb.20210328-17-p0.en+FX+478'
         }
+        cookies = {'CONSENT': 'YES+cb.20210328-17-p0.en+FX+478'}
         
-        # 1. 유튜브 영상 페이지 HTML 가져오기
-        response = requests.get(url, headers=headers, timeout=10)
+        response = requests.get(url, headers=headers, cookies=cookies, timeout=10)
         html = response.text
 
         caption_tracks = []
 
-        # 2. HTML 내부에 숨겨진 자막 JSON 데이터 탐지 (방법 A: 전체 PlayerResponse 추출)
-        match = re.search(r'ytInitialPlayerResponse\s*=\s*({.+?})\s*;\s*(?:var\s+meta|<\/script|\n)', html)
-        if match:
-            player_response = json.loads(match.group(1))
-            caption_tracks = player_response.get('captions', {}).get('playerCaptionsTracklistRenderer', {}).get('captionTracks', [])
-        
-        # 3. 이중 탐지망 (방법 B: captionTracks 배열만 직접 타겟팅 - 구조가 바뀌었을 때 대비)
+        # [전략 1] HTML 내 'captions' 객체 정밀 타격 (유튜브가 가짜 페이지를 주지 않았을 경우)
+        match1 = re.search(r'"captions":({"playerCaptionsTracklistRenderer":{.*?}})', html)
+        if match1:
+            try:
+                captions_json = json.loads(match1.group(1))
+                caption_tracks = captions_json.get('playerCaptionsTracklistRenderer', {}).get('captionTracks', [])
+            except: pass
+
+        # [전략 2] 전체 PlayerResponse 파싱
         if not caption_tracks:
-            track_match = re.search(r'"captionTracks":(\[.*?\])', html)
-            if track_match:
-                caption_tracks = json.loads(track_match.group(1))
+            match2 = re.search(r'ytInitialPlayerResponse\s*=\s*({.+?});', html)
+            if match2:
+                try:
+                    player_response = json.loads(match2.group(1))
+                    caption_tracks = player_response.get('captions', {}).get('playerCaptionsTracklistRenderer', {}).get('captionTracks', [])
+                except: pass
+
+        # 🚨 [전략 3 - 최종 병기] 유튜브 내부망(InnerTube API) 직접 해킹!
+        # HTML 스크래핑이 막히면 페이지 내부에 숨겨진 API 키를 탈취해 직접 POST 요청을 쏩니다.
+        if not caption_tracks:
+            print("HTML 스크래핑 차단됨. InnerTube API 직접 호출 시도...")
+            key_match = re.search(r'"INNERTUBE_API_KEY":"(.*?)"', html)
+            if key_match:
+                api_key = key_match.group(1)
+                api_url = f"https://www.youtube.com/youtubei/v1/player?key={api_key}"
+                payload = {
+                    "context": {
+                        "client": {
+                            "clientName": "WEB",
+                            "clientVersion": "2.20230728.00.00",
+                            "hl": "en",
+                            "gl": "US"
+                        }
+                    },
+                    "videoId": video_id
+                }
+                api_response = requests.post(api_url, json=payload, headers=headers, timeout=10)
+                if api_response.status_code == 200:
+                    player_response = api_response.json()
+                    caption_tracks = player_response.get('captions', {}).get('playerCaptionsTracklistRenderer', {}).get('captionTracks', [])
 
         if not caption_tracks:
-            raise Exception("이 영상에는 생성된 자막(CC)이 없습니다. 유튜브에서 직접 자막 아이콘이 켜지는지 확인해주세요.")
+            raise Exception("영상에 자막이 없거나, 유튜브 봇 탐지 시스템에 의해 완벽히 차단되었습니다.")
 
-        # 4. 최우선 순위: 영어(en) -> 한국어(ko) -> 첫 번째 자막
+        # 최우선 순위: 영어(en) -> 한국어(ko) -> 첫 번째 자막
         target_track = next((track for track in caption_tracks if track.get('languageCode') == 'en'), None)
         if not target_track:
             target_track = next((track for track in caption_tracks if track.get('languageCode') == 'ko'), None)
         if not target_track:
             target_track = caption_tracks[0]
 
-        # 5. 자막 원본 XML 다운로드 및 파싱
+        # 자막 원본 XML 다운로드 및 파싱
         xml_url = target_track['baseUrl']
         xml_response = requests.get(xml_url, timeout=10)
         root = ET.fromstring(xml_response.text)
@@ -92,7 +120,7 @@ def fetch_transcript_direct(video_id):
         return data
 
     except Exception as e:
-        raise Exception(f"직접 추출 엔진 실패: {str(e)}")
+        raise Exception(f"{str(e)}")
 
 @app.get("/")
 def health_check():
